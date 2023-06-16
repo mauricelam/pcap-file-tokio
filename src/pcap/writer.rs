@@ -1,6 +1,6 @@
-use std::io::Write;
+use tokio::io::AsyncWrite;
 
-use byteorder_slice::{BigEndian, LittleEndian};
+use byteorder::{BigEndian, LittleEndian};
 
 use super::RawPcapPacket;
 use crate::errors::*;
@@ -12,34 +12,36 @@ use crate::{Endianness, TsResolution};
 ///
 /// # Example
 /// ```rust,no_run
-/// use std::fs::File;
+/// # tokio_test::block_on(async {
+/// use tokio::fs::File;
 ///
-/// use pcap_file::pcap::{PcapReader, PcapWriter};
+/// use pcap_file_tokio::pcap::{PcapReader, PcapWriter};
 ///
-/// let file_in = File::open("test.pcap").expect("Error opening file");
-/// let mut pcap_reader = PcapReader::new(file_in).unwrap();
+/// let file_in = File::open("test.pcap").await.expect("Error opening file");
+/// let mut pcap_reader = PcapReader::new(file_in).await.unwrap();
 ///
-/// let file_out = File::create("out.pcap").expect("Error creating file out");
-/// let mut pcap_writer = PcapWriter::new(file_out).expect("Error writing file");
+/// let file_out = File::create("out.pcap").await.expect("Error creating file out");
+/// let mut pcap_writer = PcapWriter::new(file_out).await.expect("Error writing file");
 ///
 /// // Read test.pcap
-/// while let Some(pkt) = pcap_reader.next_packet() {
+/// while let Some(pkt) = pcap_reader.next_packet().await {
 ///     //Check if there is no error
 ///     let pkt = pkt.unwrap();
 ///
 ///     //Write each packet of test.pcap in out.pcap
-///     pcap_writer.write_packet(&pkt).unwrap();
+///     pcap_writer.write_packet(&pkt).await.unwrap();
 /// }
+/// # });
 /// ```
 #[derive(Debug)]
-pub struct PcapWriter<W: Write> {
+pub struct PcapWriter<W: AsyncWrite> {
     endianness: Endianness,
     snaplen: u32,
     ts_resolution: TsResolution,
     writer: W,
 }
 
-impl<W: Write> PcapWriter<W> {
+impl<W: AsyncWrite + Unpin> PcapWriter<W> {
     /// Creates a new [`PcapWriter`] from an existing writer.
     ///
     /// Defaults to the native endianness of the CPU.
@@ -60,10 +62,10 @@ impl<W: Write> PcapWriter<W> {
     ///
     /// # Errors
     /// The writer can't be written to.
-    pub fn new(writer: W) -> PcapResult<PcapWriter<W>> {
+    pub async fn new(writer: W) -> PcapResult<PcapWriter<W>> {
         let header = PcapHeader { endianness: Endianness::native(), ..Default::default() };
 
-        PcapWriter::with_header(writer, header)
+        PcapWriter::with_header(writer, header).await
     }
 
     /// Creates a new [`PcapWriter`] from an existing writer with a user defined [`PcapHeader`].
@@ -72,8 +74,8 @@ impl<W: Write> PcapWriter<W> {
     ///
     /// # Errors
     /// The writer can't be written to.
-    pub fn with_header(mut writer: W, header: PcapHeader) -> PcapResult<PcapWriter<W>> {
-        header.write_to(&mut writer)?;
+    pub async fn with_header(mut writer: W, header: PcapHeader) -> PcapResult<PcapWriter<W>> {
+        header.write_to(&mut writer).await?;
 
         Ok(PcapWriter {
             endianness: header.endianness,
@@ -89,18 +91,18 @@ impl<W: Write> PcapWriter<W> {
     }
 
     /// Writes a [`PcapPacket`].
-    pub fn write_packet(&mut self, packet: &PcapPacket) -> PcapResult<usize> {
+    pub async fn write_packet(&mut self, packet: &PcapPacket<'_>) -> PcapResult<usize> {
         match self.endianness {
-            Endianness::Big => packet.write_to::<_, BigEndian>(&mut self.writer, self.ts_resolution, self.snaplen),
-            Endianness::Little => packet.write_to::<_, LittleEndian>(&mut self.writer, self.ts_resolution, self.snaplen),
+            Endianness::Big => packet.write_to::<_, BigEndian>(&mut self.writer, self.ts_resolution, self.snaplen).await,
+            Endianness::Little => packet.write_to::<_, LittleEndian>(&mut self.writer, self.ts_resolution, self.snaplen).await,
         }
     }
 
     /// Writes a [`RawPcapPacket`].
-    pub fn write_raw_packet(&mut self, packet: &RawPcapPacket) -> PcapResult<usize> {
+    pub async fn write_raw_packet(&mut self, packet: &RawPcapPacket<'_>) -> PcapResult<usize> {
         match self.endianness {
-            Endianness::Big => packet.write_to::<_, BigEndian>(&mut self.writer),
-            Endianness::Little => packet.write_to::<_, LittleEndian>(&mut self.writer),
+            Endianness::Big => packet.write_to::<_, BigEndian>(&mut self.writer).await,
+            Endianness::Little => packet.write_to::<_, LittleEndian>(&mut self.writer).await,
         }
     }
 

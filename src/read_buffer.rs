@@ -1,11 +1,15 @@
-use std::io::{Error, ErrorKind, Read};
+use std::{
+    future::Future,
+    io::{Error, ErrorKind},
+};
+
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::PcapError;
 
-
 /// Internal structure that bufferize its input and allow to parse element from its buffer.
 #[derive(Debug)]
-pub(crate) struct ReadBuffer<R: Read> {
+pub(crate) struct ReadBuffer<R: AsyncRead + Unpin> {
     /// Reader from which we read the data from
     reader: R,
     /// Internal buffer
@@ -16,7 +20,7 @@ pub(crate) struct ReadBuffer<R: Read> {
     len: usize,
 }
 
-impl<R: Read> ReadBuffer<R> {
+impl<R: AsyncRead + Unpin> ReadBuffer<R> {
     /// Creates a new ReadBuffer with capacity of 8_000_000
     pub fn new(reader: R) -> Self {
         Self::with_capacity(reader, 8_000_000)
@@ -27,15 +31,34 @@ impl<R: Read> ReadBuffer<R> {
         Self { reader, buffer: vec![0_u8; capacity], pos: 0, len: 0 }
     }
 
+    pub async fn parse_with<'a, 'b: 'a, 'c: 'a, F, Fut, O>(&'c mut self, mut parser: F) -> Result<O, PcapError>
+    where
+        F: FnMut(&'a [u8]) -> Fut,
+        F: 'b,
+        Fut: Future<Output = Result<(&'a [u8], O), PcapError>> + 'a,
+        O: 'a,
+    {
+        self.parse_with_context((), move |_, src| {
+            let fut = parser(src);
+            async { (fut.await, ()) }
+        })
+        .await
+    }
+
     /// Parse data from the internal buffer
     ///
     /// Safety
     ///
     /// The parser must NOT keep a reference to the buffer in input.
-    pub fn parse_with<'a, 'b: 'a, 'c: 'a, F, O>(&'c mut self, mut parser: F) -> Result<O, PcapError>
+    pub async fn parse_with_context<'a, 'b: 'a, 'c: 'a, Context, F, Fut, O>(
+        &'c mut self,
+        mut context: Context,
+        mut parser: F,
+    ) -> Result<O, PcapError>
     where
-        F: FnMut(&'a [u8]) -> Result<(&'a [u8], O), PcapError>,
+        F: FnMut(Context, &'a [u8]) -> Fut,
         F: 'b,
+        Fut: Future<Output = (Result<(&'a [u8], O), PcapError>, Context)> + 'a,
         O: 'a,
     {
         loop {
@@ -44,7 +67,9 @@ impl<R: Read> ReadBuffer<R> {
             // Sound because 'b and 'c must outlive 'a so the buffer cannot be modified while someone has a ref on it
             let buf: &'a [u8] = unsafe { std::mem::transmute(buf) };
 
-            match parser(buf) {
+            let result = parser(context, buf).await;
+            context = result.1;
+            match result.0 {
                 Ok((rem, value)) => {
                     self.advance_with_slice(rem);
                     return Ok(value);
@@ -56,7 +81,7 @@ impl<R: Read> ReadBuffer<R> {
                         return Err(PcapError::IoError(Error::from(ErrorKind::UnexpectedEof)));
                     }
 
-                    let nb_read = self.fill_buf().map_err(PcapError::IoError)?;
+                    let nb_read = self.fill_buf().await.map_err(PcapError::IoError)?;
                     if nb_read == 0 {
                         return Err(PcapError::IoError(Error::from(ErrorKind::UnexpectedEof)));
                     }
@@ -69,7 +94,7 @@ impl<R: Read> ReadBuffer<R> {
 
     /// Fill the inner buffer.
     /// Copy the remaining data inside buffer at its start and the fill the end part with data from the reader.
-    fn fill_buf(&mut self) -> Result<usize, std::io::Error> {
+    async fn fill_buf(&mut self) -> Result<usize, std::io::Error> {
         // Copy the remaining data to the start of the buffer
         let rem_len = unsafe {
             let buf_ptr_mut = self.buffer.as_mut_ptr();
@@ -78,7 +103,7 @@ impl<R: Read> ReadBuffer<R> {
             self.len - self.pos
         };
 
-        let nb_read = self.reader.read(&mut self.buffer[rem_len..])?;
+        let nb_read = self.reader.read(&mut self.buffer[rem_len..]).await?;
 
         self.len = rem_len + nb_read;
         self.pos = 0;
@@ -108,10 +133,10 @@ impl<R: Read> ReadBuffer<R> {
     }
 
     /// Return true there are some data that can be read
-    pub fn has_data_left(&mut self) -> Result<bool, std::io::Error> {
+    pub async fn has_data_left(&mut self) -> Result<bool, std::io::Error> {
         // The buffer can be empty and the reader can still have data
         if self.buffer().is_empty() {
-            let nb_read = self.fill_buf()?;
+            let nb_read = self.fill_buf().await?;
             if nb_read == 0 {
                 return Ok(false);
             }

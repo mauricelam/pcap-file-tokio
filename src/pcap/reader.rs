@@ -1,4 +1,4 @@
-use std::io::Read;
+use tokio::io::AsyncRead;
 
 use super::{PcapParser, RawPcapPacket};
 use crate::errors::*;
@@ -11,28 +11,30 @@ use crate::read_buffer::ReadBuffer;
 /// # Example
 ///
 /// ```rust,no_run
-/// use std::fs::File;
+/// # tokio_test::block_on(async {
+/// use tokio::fs::File;
 ///
-/// use pcap_file::pcap::PcapReader;
+/// use pcap_file_tokio::pcap::PcapReader;
 ///
-/// let file_in = File::open("test.pcap").expect("Error opening file");
-/// let mut pcap_reader = PcapReader::new(file_in).unwrap();
+/// let file_in = File::open("test.pcap").await.expect("Error opening file");
+/// let mut pcap_reader = PcapReader::new(file_in).await.unwrap();
 ///
 /// // Read test.pcap
-/// while let Some(pkt) = pcap_reader.next_packet() {
+/// while let Some(pkt) = pcap_reader.next_packet().await {
 ///     //Check if there is no error
 ///     let pkt = pkt.unwrap();
 ///
 ///     //Do something
 /// }
+/// # });
 /// ```
 #[derive(Debug)]
-pub struct PcapReader<R: Read> {
+pub struct PcapReader<R: AsyncRead + Unpin> {
     parser: PcapParser,
     reader: ReadBuffer<R>,
 }
 
-impl<R: Read> PcapReader<R> {
+impl<R: AsyncRead + Unpin> PcapReader<R> {
     /// Creates a new [`PcapReader`] from an existing reader.
     ///
     /// This function reads the global pcap header of the file to verify its integrity.
@@ -43,9 +45,9 @@ impl<R: Read> PcapReader<R> {
     /// The data stream is not in a valid pcap file format.
     ///
     /// The underlying data are not readable.
-    pub fn new(reader: R) -> Result<PcapReader<R>, PcapError> {
+    pub async fn new(reader: R) -> Result<PcapReader<R>, PcapError> {
         let mut reader = ReadBuffer::new(reader);
-        let parser = reader.parse_with(PcapParser::new)?;
+        let parser = reader.parse_with(PcapParser::new).await?;
 
         Ok(PcapReader { parser, reader })
     }
@@ -56,11 +58,11 @@ impl<R: Read> PcapReader<R> {
     }
 
     /// Returns the next [`PcapPacket`].
-    pub fn next_packet(&mut self) -> Option<Result<PcapPacket, PcapError>> {
-        match self.reader.has_data_left() {
+    pub async fn next_packet(&mut self) -> Option<Result<PcapPacket, PcapError>> {
+        match self.reader.has_data_left().await {
             Ok(has_data) => {
                 if has_data {
-                    Some(self.reader.parse_with(|src| self.parser.next_packet(src)))
+                    Some(self.reader.parse_with(|src|  self.parser.next_packet(src)).await)
                 }
                 else {
                     None
@@ -71,11 +73,11 @@ impl<R: Read> PcapReader<R> {
     }
 
     /// Returns the next [`RawPcapPacket`].
-    pub fn next_raw_packet(&mut self) -> Option<Result<RawPcapPacket, PcapError>> {
-        match self.reader.has_data_left() {
+    pub async fn next_raw_packet(&mut self) -> Option<Result<RawPcapPacket, PcapError>> {
+        match self.reader.has_data_left().await {
             Ok(has_data) => {
                 if has_data {
-                    Some(self.reader.parse_with(|src| self.parser.next_raw_packet(src)))
+                    Some(self.reader.parse_with(|src| self.parser.next_raw_packet(src)).await)
                 }
                 else {
                     None

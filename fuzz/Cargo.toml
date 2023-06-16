@@ -10,9 +10,11 @@ edition = "2018"
 cargo-fuzz = true
 
 [dependencies]
-libfuzzer-sys = "0.3"
+libfuzzer-sys = "0.4.6"
+tokio = { version = "1.28.2", features = ["full"] }
+tokio-test = "0.4.2"
 
-[dependencies.pcap-file]
+[dependencies.pcap-file-tokio]
 path = ".."
 
 # Prevent this from interfering with workspaces

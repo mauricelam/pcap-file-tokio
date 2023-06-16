@@ -1,10 +1,10 @@
 use std::borrow::Cow;
-use std::io::Write;
+use tokio::io::AsyncWrite;
+use tokio_byteorder::AsyncReadBytesExt;
+use tokio_byteorder::AsyncWriteBytesExt;
 use std::time::Duration;
 
-use byteorder_slice::byteorder::WriteBytesExt;
-use byteorder_slice::result::ReadSlice;
-use byteorder_slice::ByteOrder;
+use byteorder::ByteOrder;
 use derive_into_owned::IntoOwned;
 
 use crate::errors::*;
@@ -35,15 +35,15 @@ impl<'a> PcapPacket<'a> {
     }
 
     /// Parses a new borrowed [`PcapPacket`] from a slice.
-    pub fn from_slice<B: ByteOrder>(slice: &'a [u8], ts_resolution: TsResolution, snap_len: u32) -> PcapResult<(&'a [u8], PcapPacket<'a>)> {
-        let (rem, raw_packet) = RawPcapPacket::from_slice::<B>(slice)?;
+    pub async fn from_slice<B: ByteOrder>(slice: &'a [u8], ts_resolution: TsResolution, snap_len: u32) -> PcapResult<(&'a [u8], PcapPacket<'a>)> {
+        let (rem, raw_packet) = RawPcapPacket::from_slice::<B>(slice).await?;
         let s = Self::try_from_raw_packet(raw_packet, ts_resolution, snap_len)?;
 
         Ok((rem, s))
     }
 
     /// Writes a [`PcapPacket`] to a writer.
-    pub fn write_to<W: Write, B: ByteOrder>(&self, writer: &mut W, ts_resolution: TsResolution, snap_len: u32) -> PcapResult<usize> {
+    pub async fn write_to<W: AsyncWrite + Unpin, B: ByteOrder>(&self, writer: &mut W, ts_resolution: TsResolution, snap_len: u32) -> PcapResult<usize> {
         // Transforms PcapPacket::ts into ts_sec and ts_frac //
         let ts_sec = self
             .timestamp
@@ -70,7 +70,7 @@ impl<'a> PcapPacket<'a> {
 
         let raw_packet = RawPcapPacket { ts_sec, ts_frac, incl_len, orig_len, data: Cow::Borrowed(&self.data[..]) };
 
-        raw_packet.write_to::<_, B>(writer)
+        raw_packet.write_to::<_, B>(writer).await
     }
 
     /// Tries to create a [`PcapPacket`] from a [`RawPcapPacket`].
@@ -125,7 +125,7 @@ pub struct RawPcapPacket<'a> {
 
 impl<'a> RawPcapPacket<'a> {
     /// Parses a new borrowed [`RawPcapPacket`] from a slice.
-    pub fn from_slice<B: ByteOrder>(mut slice: &'a [u8]) -> PcapResult<(&'a [u8], Self)> {
+    pub async fn from_slice<B: ByteOrder>(mut slice: &'a [u8]) -> PcapResult<(&'a [u8], RawPcapPacket<'a>)> {
         // Check header length
         if slice.len() < 16 {
             return Err(PcapError::IncompleteBuffer);
@@ -133,10 +133,10 @@ impl<'a> RawPcapPacket<'a> {
 
         // Read packet header  //
         // Can unwrap because the length check is done before
-        let ts_sec = slice.read_u32::<B>().unwrap();
-        let ts_frac = slice.read_u32::<B>().unwrap();
-        let incl_len = slice.read_u32::<B>().unwrap();
-        let orig_len = slice.read_u32::<B>().unwrap();
+        let ts_sec = slice.read_u32::<B>().await.unwrap();
+        let ts_frac = slice.read_u32::<B>().await.unwrap();
+        let incl_len = slice.read_u32::<B>().await.unwrap();
+        let orig_len = slice.read_u32::<B>().await.unwrap();
 
         let pkt_len = incl_len as usize;
         if slice.len() < pkt_len {
@@ -151,12 +151,12 @@ impl<'a> RawPcapPacket<'a> {
 
     /// Writes a [`RawPcapPacket`] to a writer.
     /// The fields of the packet are not validated.
-    pub fn write_to<W: Write, B: ByteOrder>(&self, writer: &mut W) -> PcapResult<usize> {
-        writer.write_u32::<B>(self.ts_sec).map_err(PcapError::IoError)?;
-        writer.write_u32::<B>(self.ts_frac).map_err(PcapError::IoError)?;
-        writer.write_u32::<B>(self.incl_len).map_err(PcapError::IoError)?;
-        writer.write_u32::<B>(self.orig_len).map_err(PcapError::IoError)?;
-        writer.write_all(&self.data).map_err(PcapError::IoError)?;
+    pub async fn write_to<W: AsyncWrite + Unpin, B: ByteOrder>(&self, writer: &mut W) -> PcapResult<usize> {
+        writer.write_u32::<B>(self.ts_sec).await.map_err(PcapError::IoError)?;
+        writer.write_u32::<B>(self.ts_frac).await.map_err(PcapError::IoError)?;
+        writer.write_u32::<B>(self.incl_len).await.map_err(PcapError::IoError)?;
+        writer.write_u32::<B>(self.orig_len).await.map_err(PcapError::IoError)?;
+        tokio::io::AsyncWriteExt::write_all(writer, &self.data).await.map_err(PcapError::IoError)?;
 
         Ok(16 + self.data.len())
     }

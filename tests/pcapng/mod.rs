@@ -1,36 +1,35 @@
-use std::fs::File;
-use std::io::Read;
+use tokio::{fs::File, io::AsyncReadExt};
 
 use glob::glob;
-use pcap_file::pcapng::{PcapNgParser, PcapNgReader, PcapNgWriter};
+use pcap_file_tokio::pcapng::{PcapNgParser, PcapNgReader, PcapNgWriter};
 
-#[test]
-fn reader() {
+#[tokio::test]
+async fn reader() {
     for entry in glob("tests/pcapng/**/**/*.pcapng").expect("Failed to read glob pattern") {
         let entry = entry.unwrap();
 
-        let file = File::open(&entry).unwrap();
-        let mut pcapng_reader = PcapNgReader::new(file).unwrap();
+        let file = File::open(&entry).await.unwrap();
+        let mut pcapng_reader = PcapNgReader::new(file).await.unwrap();
 
         let mut i = 0;
-        while let Some(block) = pcapng_reader.next_block() {
+        while let Some(block) = pcapng_reader.next_block().await {
             let _block = block.unwrap_or_else(|_| panic!("Error on block {i} on file: {entry:?}"));
             i += 1;
         }
     }
 }
 
-#[test]
-fn parser() {
+#[tokio::test]
+async fn parser() {
     for entry in glob("tests/pcapng/**/**/*.pcapng").expect("Failed to read glob pattern") {
         let entry = entry.unwrap();
 
-        let mut file = File::open(&entry).unwrap();
+        let mut file = File::open(&entry).await.unwrap();
         let mut data = Vec::new();
-        file.read_to_end(&mut data).unwrap();
+        file.read_to_end(&mut data).await.unwrap();
 
         let mut src = &data[..];
-        let (rem, mut pcapng_parser) = PcapNgParser::new(src).unwrap();
+        let (rem, mut pcapng_parser) = PcapNgParser::new(src).await.unwrap();
         src = rem;
 
         let mut i = 0;
@@ -39,7 +38,10 @@ fn parser() {
                 break;
             }
 
-            let (rem, _) = pcapng_parser.next_block(src).unwrap_or_else(|_| panic!("Error on block {i} on file: {entry:?}"));
+            let (rem, _) = pcapng_parser
+                .next_block(src)
+                .await
+                .unwrap_or_else(|_| panic!("Error on block {i} on file: {entry:?}"));
             src = rem;
 
             i += 1;
@@ -47,20 +49,21 @@ fn parser() {
     }
 }
 
-#[test]
-fn writer() {
+#[tokio::test]
+async fn writer() {
     for entry in glob("tests/pcapng/**/**/*.pcapng").expect("Failed to read glob pattern") {
         let entry = entry.unwrap();
 
         let pcapng_in = std::fs::read(&entry).unwrap();
-        let mut pcapng_reader = PcapNgReader::new(&pcapng_in[..]).unwrap();
-        let mut pcapng_writer = PcapNgWriter::with_section_header(Vec::new(), pcapng_reader.section().clone()).unwrap();
+        let mut pcapng_reader = PcapNgReader::new(&pcapng_in[..]).await.unwrap();
+        let mut pcapng_writer = PcapNgWriter::with_section_header(Vec::new(), pcapng_reader.section().clone()).await.unwrap();
 
         let mut idx = 0;
-        while let Some(block) = pcapng_reader.next_block() {
+        while let Some(block) = pcapng_reader.next_block().await {
             let block = block.unwrap();
             pcapng_writer
                 .write_block(&block)
+                .await
                 .unwrap_or_else(|_| panic!("Error writing block, file: {entry:?}, block n°{idx}, block: {block:?}"));
             idx += 1;
         }
@@ -69,11 +72,11 @@ fn writer() {
         let actual = pcapng_writer.get_ref();
 
         if expected != actual {
-            let mut expected_reader = PcapNgReader::new(&expected[..]).unwrap();
-            let mut actual_reader = PcapNgReader::new(&actual[..]).unwrap();
+            let mut expected_reader = PcapNgReader::new(&expected[..]).await.unwrap();
+            let mut actual_reader = PcapNgReader::new(&actual[..]).await.unwrap();
 
             let mut idx = 0;
-            while let (Some(expected), Some(actual)) = (expected_reader.next_block(), actual_reader.next_block()) {
+            while let (Some(expected), Some(actual)) = (expected_reader.next_block().await, actual_reader.next_block().await) {
                 let expected = expected.unwrap();
                 let actual = actual.unwrap();
 

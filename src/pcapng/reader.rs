@@ -1,4 +1,4 @@
-use std::io::Read;
+use tokio::io::AsyncRead;
 
 use super::blocks::block_common::{Block, RawBlock};
 use super::blocks::enhanced_packet::EnhancedPacketBlock;
@@ -8,49 +8,53 @@ use super::PcapNgParser;
 use crate::errors::PcapError;
 use crate::read_buffer::ReadBuffer;
 
-
 /// Reads a PcapNg from a reader.
 ///
 /// # Example
 /// ```rust,no_run
-/// use std::fs::File;
+/// # tokio_test::block_on(async {
+/// use tokio::fs::File;
 ///
-/// use pcap_file::pcapng::PcapNgReader;
+/// use pcap_file_tokio::pcapng::PcapNgReader;
 ///
-/// let file_in = File::open("test.pcapng").expect("Error opening file");
-/// let mut pcapng_reader = PcapNgReader::new(file_in).unwrap();
+/// let file_in = File::open("test.pcapng").await.expect("Error opening file");
+/// let mut pcapng_reader = PcapNgReader::new(file_in).await.unwrap();
 ///
 /// // Read test.pcapng
-/// while let Some(block) = pcapng_reader.next_block() {
+/// while let Some(block) = pcapng_reader.next_block().await {
 ///     //Check if there is no error
 ///     let block = block.unwrap();
 ///
 ///     //Do something
 /// }
+/// # });
 /// ```
-pub struct PcapNgReader<R: Read> {
+pub struct PcapNgReader<R: AsyncRead + Unpin> {
     parser: PcapNgParser,
     reader: ReadBuffer<R>,
 }
 
-impl<R: Read> PcapNgReader<R> {
+impl<R: AsyncRead + Unpin> PcapNgReader<R> {
     /// Creates a new [`PcapNgReader`] from a reader.
     ///
     /// Parses the first block which must be a valid SectionHeaderBlock.
-    pub fn new(reader: R) -> Result<PcapNgReader<R>, PcapError> {
+    pub async fn new(reader: R) -> Result<PcapNgReader<R>, PcapError> {
         let mut reader = ReadBuffer::new(reader);
-        let parser = reader.parse_with(PcapNgParser::new)?;
+        let parser = reader.parse_with(PcapNgParser::new).await?;
         Ok(Self { parser, reader })
     }
 
     /// Returns the next [`Block`].
-    pub fn next_block(&mut self) -> Option<Result<Block, PcapError>> {
-        match self.reader.has_data_left() {
+    pub async fn next_block(&mut self) -> Option<Result<Block, PcapError>> {
+        match self.reader.has_data_left().await {
             Ok(has_data) => {
                 if has_data {
-                    Some(self.reader.parse_with(|src| self.parser.next_block(src)))
-                }
-                else {
+                    Some(
+                        self.reader
+                            .parse_with_context(&mut self.parser, |parser, src| async { (parser.next_block(src).await, parser) })
+                            .await,
+                    )
+                } else {
                     None
                 }
             },
@@ -59,13 +63,12 @@ impl<R: Read> PcapNgReader<R> {
     }
 
     /// Returns the next [`RawBlock`].
-    pub fn next_raw_block(&mut self) -> Option<Result<RawBlock, PcapError>> {
-        match self.reader.has_data_left() {
+    pub async fn next_raw_block(&mut self) -> Option<Result<RawBlock, PcapError>> {
+        match self.reader.has_data_left().await {
             Ok(has_data) => {
                 if has_data {
-                    Some(self.reader.parse_with(|src| self.parser.next_raw_block(src)))
-                }
-                else {
+                    Some(self.reader.parse_with_context(&mut self.parser, |parser, src| async { (parser.next_raw_block(src).await, parser) }).await)
+                } else {
                     None
                 }
             },

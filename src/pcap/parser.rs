@@ -1,4 +1,4 @@
-use byteorder_slice::{BigEndian, LittleEndian};
+use byteorder::{BigEndian, LittleEndian};
 
 use super::RawPcapPacket;
 use crate::errors::*;
@@ -12,18 +12,19 @@ use crate::Endianness;
 ///
 /// # Example
 /// ```no_run
-/// use pcap_file::pcap::PcapParser;
-/// use pcap_file::PcapError;
+/// # tokio_test::block_on(async {
+/// use pcap_file_tokio::pcap::PcapParser;
+/// use pcap_file_tokio::PcapError;
 ///
 /// let pcap = vec![0_u8; 0];
 /// let mut src = &pcap[..];
 ///
 /// // Creates a new parser and parse the pcap header
-/// let (rem, pcap_parser) = PcapParser::new(&pcap[..]).unwrap();
+/// let (rem, pcap_parser) = PcapParser::new(&pcap[..]).await.unwrap();
 /// src = rem;
 ///
 /// loop {
-///     match pcap_parser.next_packet(src) {
+///     match pcap_parser.next_packet(src).await {
 ///         Ok((rem, packet)) => {
 ///             // Do something
 ///
@@ -39,6 +40,7 @@ use crate::Endianness;
 ///         Err(_) => {},                           // Parsing error
 ///     }
 /// }
+/// # });
 /// ```
 #[derive(Debug)]
 pub struct PcapParser {
@@ -49,8 +51,8 @@ impl PcapParser {
     /// Creates a new [`PcapParser`].
     ///
     /// Returns the remainder and the parser.
-    pub fn new(slice: &[u8]) -> PcapResult<(&[u8], PcapParser)> {
-        let (slice, header) = PcapHeader::from_slice(slice)?;
+    pub async fn new(slice: &[u8]) -> PcapResult<(&[u8], PcapParser)> {
+        let (slice, header) = PcapHeader::from_slice(slice).await?;
 
         let parser = PcapParser { header };
 
@@ -58,18 +60,18 @@ impl PcapParser {
     }
 
     /// Returns the remainder and the next [`PcapPacket`].
-    pub fn next_packet<'a>(&self, slice: &'a [u8]) -> PcapResult<(&'a [u8], PcapPacket<'a>)> {
+    pub async fn next_packet<'a>(&self, slice: &'a [u8]) -> PcapResult<(&'a [u8], PcapPacket<'a>)> {
         match self.header.endianness {
-            Endianness::Big => PcapPacket::from_slice::<BigEndian>(slice, self.header.ts_resolution, self.header.snaplen),
-            Endianness::Little => PcapPacket::from_slice::<LittleEndian>(slice, self.header.ts_resolution, self.header.snaplen),
+            Endianness::Big => PcapPacket::from_slice::<BigEndian>(slice, self.header.ts_resolution, self.header.snaplen).await,
+            Endianness::Little => PcapPacket::from_slice::<LittleEndian>(slice, self.header.ts_resolution, self.header.snaplen).await,
         }
     }
 
     /// Returns the remainder and the next [`RawPcapPacket`].
-    pub fn next_raw_packet<'a>(&self, slice: &'a [u8]) -> PcapResult<(&'a [u8], RawPcapPacket<'a>)> {
+    pub async fn next_raw_packet<'a>(&self, slice: &'a [u8]) -> PcapResult<(&'a [u8], RawPcapPacket<'a>)> {
         match self.header.endianness {
-            Endianness::Big => RawPcapPacket::from_slice::<BigEndian>(slice),
-            Endianness::Little => RawPcapPacket::from_slice::<LittleEndian>(slice),
+            Endianness::Big => RawPcapPacket::from_slice::<BigEndian>(slice).await,
+            Endianness::Little => RawPcapPacket::from_slice::<LittleEndian>(slice).await,
         }
     }
 

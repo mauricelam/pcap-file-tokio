@@ -1,12 +1,12 @@
 //! Section Header Block.
 
 use std::borrow::Cow;
-use std::io::{Result as IoResult, Write};
+use std::io::Result as IoResult;
 
-use byteorder_slice::byteorder::WriteBytesExt;
-use byteorder_slice::result::ReadSlice;
-use byteorder_slice::{BigEndian, ByteOrder, LittleEndian};
+use byteorder::{ByteOrder, BigEndian, LittleEndian};
 use derive_into_owned::IntoOwned;
+use tokio::io::AsyncWrite;
+use tokio_byteorder::{AsyncReadBytesExt, AsyncWriteBytesExt};
 
 use super::block_common::{Block, PcapNgBlock};
 use super::opt_common::{CustomBinaryOption, CustomUtf8Option, PcapNgOption, UnknownOption, WriteOptTo};
@@ -38,13 +38,14 @@ pub struct SectionHeaderBlock<'a> {
     pub options: Vec<SectionHeaderOption<'a>>,
 }
 
+#[async_trait::async_trait]
 impl<'a> PcapNgBlock<'a> for SectionHeaderBlock<'a> {
-    fn from_slice<B: ByteOrder>(mut slice: &'a [u8]) -> Result<(&'a [u8], Self), PcapError> {
+    async fn from_slice<B: ByteOrder>(mut slice: &'a [u8]) -> Result<(&'a [u8], SectionHeaderBlock<'a>), PcapError> {
         if slice.len() < 16 {
             return Err(PcapError::InvalidField("SectionHeaderBlock: block length < 16"));
         }
 
-        let magic = slice.read_u32::<BigEndian>().unwrap();
+        let magic = slice.read_u32::<BigEndian>().await.unwrap();
         let endianness = match magic {
             0x1A2B3C4D => Endianness::Big,
             0x4D3C2B1A => Endianness::Little,
@@ -52,8 +53,8 @@ impl<'a> PcapNgBlock<'a> for SectionHeaderBlock<'a> {
         };
 
         let (rem, major_version, minor_version, section_length, options) = match endianness {
-            Endianness::Big => parse_inner::<BigEndian>(slice)?,
-            Endianness::Little => parse_inner::<LittleEndian>(slice)?,
+            Endianness::Big => parse_inner::<BigEndian>(slice).await?,
+            Endianness::Little => parse_inner::<LittleEndian>(slice).await?,
         };
 
         let block = SectionHeaderBlock { endianness, major_version, minor_version, section_length, options };
@@ -61,27 +62,27 @@ impl<'a> PcapNgBlock<'a> for SectionHeaderBlock<'a> {
         return Ok((rem, block));
 
         #[allow(clippy::type_complexity)]
-        fn parse_inner<B: ByteOrder>(mut slice: &[u8]) -> Result<(&[u8], u16, u16, i64, Vec<SectionHeaderOption>), PcapError> {
-            let maj_ver = slice.read_u16::<B>().unwrap();
-            let min_ver = slice.read_u16::<B>().unwrap();
-            let sec_len = slice.read_i64::<B>().unwrap();
-            let (rem, opts) = SectionHeaderOption::opts_from_slice::<B>(slice)?;
+        async fn parse_inner<B: ByteOrder + Send>(mut slice: &[u8]) -> Result<(&[u8], u16, u16, i64, Vec<SectionHeaderOption>), PcapError> {
+            let maj_ver = slice.read_u16::<B>().await.unwrap();
+            let min_ver = slice.read_u16::<B>().await.unwrap();
+            let sec_len = slice.read_i64::<B>().await.unwrap();
+            let (rem, opts) = SectionHeaderOption::opts_from_slice::<B>(slice).await?;
 
             Ok((rem, maj_ver, min_ver, sec_len, opts))
         }
     }
 
-    fn write_to<B: ByteOrder, W: Write>(&self, writer: &mut W) -> IoResult<usize> {
+    async fn write_to<B: ByteOrder, W: AsyncWrite + Unpin + Send>(&self, writer: &mut W) -> IoResult<usize> {
         match self.endianness {
-            Endianness::Big => writer.write_u32::<BigEndian>(0x1A2B3C4D)?,
-            Endianness::Little => writer.write_u32::<LittleEndian>(0x1A2B3C4D)?,
+            Endianness::Big => writer.write_u32::<BigEndian>(0x1A2B3C4D).await?,
+            Endianness::Little => writer.write_u32::<LittleEndian>(0x1A2B3C4D).await?,
         };
 
-        writer.write_u16::<B>(self.major_version)?;
-        writer.write_u16::<B>(self.minor_version)?;
-        writer.write_i64::<B>(self.section_length)?;
+        writer.write_u16::<B>(self.major_version).await?;
+        writer.write_u16::<B>(self.minor_version).await?;
+        writer.write_i64::<B>(self.section_length).await?;
 
-        let opt_len = SectionHeaderOption::write_opts_to::<B, W>(&self.options, writer)?;
+        let opt_len = SectionHeaderOption::write_opts_to::<B, W>(&self.options, writer).await?;
 
         Ok(16 + opt_len)
     }
@@ -129,16 +130,17 @@ pub enum SectionHeaderOption<'a> {
     Unknown(UnknownOption<'a>),
 }
 
+#[async_trait::async_trait]
 impl<'a> PcapNgOption<'a> for SectionHeaderOption<'a> {
-    fn from_slice<B: ByteOrder>(code: u16, length: u16, slice: &'a [u8]) -> Result<Self, PcapError> {
+    async fn from_slice<B: ByteOrder + Send>(code: u16, length: u16, slice: &'a [u8]) -> Result<SectionHeaderOption<'a>, PcapError> {
         let opt = match code {
             1 => SectionHeaderOption::Comment(Cow::Borrowed(std::str::from_utf8(slice)?)),
             2 => SectionHeaderOption::Hardware(Cow::Borrowed(std::str::from_utf8(slice)?)),
             3 => SectionHeaderOption::OS(Cow::Borrowed(std::str::from_utf8(slice)?)),
             4 => SectionHeaderOption::UserApplication(Cow::Borrowed(std::str::from_utf8(slice)?)),
 
-            2988 | 19372 => SectionHeaderOption::CustomUtf8(CustomUtf8Option::from_slice::<B>(code, slice)?),
-            2989 | 19373 => SectionHeaderOption::CustomBinary(CustomBinaryOption::from_slice::<B>(code, slice)?),
+            2988 | 19372 => SectionHeaderOption::CustomUtf8(CustomUtf8Option::from_slice::<B>(code, slice).await?),
+            2989 | 19373 => SectionHeaderOption::CustomBinary(CustomBinaryOption::from_slice::<B>(code, slice).await?),
 
             _ => SectionHeaderOption::Unknown(UnknownOption::new(code, length, slice)),
         };
@@ -146,15 +148,15 @@ impl<'a> PcapNgOption<'a> for SectionHeaderOption<'a> {
         Ok(opt)
     }
 
-    fn write_to<B: ByteOrder, W: Write>(&self, writer: &mut W) -> IoResult<usize> {
+    async fn write_to<B: ByteOrder, W: AsyncWrite + Unpin + Send>(&self, writer: &mut W) -> IoResult<usize> {
         match self {
-            SectionHeaderOption::Comment(a) => a.write_opt_to::<B, W>(1, writer),
-            SectionHeaderOption::Hardware(a) => a.write_opt_to::<B, W>(2, writer),
-            SectionHeaderOption::OS(a) => a.write_opt_to::<B, W>(3, writer),
-            SectionHeaderOption::UserApplication(a) => a.write_opt_to::<B, W>(4, writer),
-            SectionHeaderOption::CustomBinary(a) => a.write_opt_to::<B, W>(a.code, writer),
-            SectionHeaderOption::CustomUtf8(a) => a.write_opt_to::<B, W>(a.code, writer),
-            SectionHeaderOption::Unknown(a) => a.write_opt_to::<B, W>(a.code, writer),
+            SectionHeaderOption::Comment(a) => a.write_opt_to::<B, W>(1, writer).await,
+            SectionHeaderOption::Hardware(a) => a.write_opt_to::<B, W>(2, writer).await,
+            SectionHeaderOption::OS(a) => a.write_opt_to::<B, W>(3, writer).await,
+            SectionHeaderOption::UserApplication(a) => a.write_opt_to::<B, W>(4, writer).await,
+            SectionHeaderOption::CustomBinary(a) => a.write_opt_to::<B, W>(a.code, writer).await,
+            SectionHeaderOption::CustomUtf8(a) => a.write_opt_to::<B, W>(a.code, writer).await,
+            SectionHeaderOption::Unknown(a) => a.write_opt_to::<B, W>(a.code, writer).await,
         }
     }
 }

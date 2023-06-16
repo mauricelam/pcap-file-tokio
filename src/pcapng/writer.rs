@@ -1,6 +1,6 @@
-use std::io::Write;
+use tokio::io::AsyncWrite;
 
-use byteorder_slice::{BigEndian, ByteOrder, LittleEndian};
+use byteorder::{BigEndian, LittleEndian, ByteOrder};
 
 use super::blocks::block_common::{Block, PcapNgBlock};
 use super::blocks::interface_description::InterfaceDescriptionBlock;
@@ -14,32 +14,34 @@ use crate::{Endianness, PcapError, PcapResult};
 ///
 /// # Examples
 /// ```rust,no_run
-/// use std::fs::File;
+/// # tokio_test::block_on(async {
+/// use tokio::fs::File;
 ///
-/// use pcap_file::pcapng::{PcapNgReader, PcapNgWriter};
+/// use pcap_file_tokio::pcapng::{PcapNgReader, PcapNgWriter};
 ///
-/// let file_in = File::open("test.pcapng").expect("Error opening file");
-/// let mut pcapng_reader = PcapNgReader::new(file_in).unwrap();
+/// let file_in = File::open("test.pcapng").await.expect("Error opening file");
+/// let mut pcapng_reader = PcapNgReader::new(file_in).await.unwrap();
 ///
 /// let mut out = Vec::new();
-/// let mut pcapng_writer = PcapNgWriter::new(out).unwrap();
+/// let mut pcapng_writer = PcapNgWriter::new(out).await.unwrap();
 ///
 /// // Read test.pcapng
-/// while let Some(block) = pcapng_reader.next_block() {
+/// while let Some(block) = pcapng_reader.next_block().await {
 ///     // Check if there is no error
 ///     let block = block.unwrap();
 ///
 ///     // Write back parsed Block
-///     pcapng_writer.write_block(&block).unwrap();
+///     pcapng_writer.write_block(&block).await.unwrap();
 /// }
+/// # });
 /// ```
-pub struct PcapNgWriter<W: Write> {
+pub struct PcapNgWriter<W: AsyncWrite> {
     section: SectionHeaderBlock<'static>,
     interfaces: Vec<InterfaceDescriptionBlock<'static>>,
     writer: W,
 }
 
-impl<W: Write> PcapNgWriter<W> {
+impl<W: AsyncWrite + Unpin + Send> PcapNgWriter<W> {
     /// Creates a new [`PcapNgWriter`] from an existing writer.
     ///
     /// Defaults to the native endianness of the CPU.
@@ -58,22 +60,22 @@ impl<W: Write> PcapNgWriter<W> {
     ///
     /// # Errors
     /// The writer can't be written to.
-    pub fn new(writer: W) -> PcapResult<Self> {
-        Self::with_endianness(writer, Endianness::native())
+    pub async fn new(writer: W) -> PcapResult<Self> {
+        Self::with_endianness(writer, Endianness::native()).await
     }
 
     /// Creates a new [`PcapNgWriter`] from an existing writer with the given endianness.
-    pub fn with_endianness(writer: W, endianness: Endianness) -> PcapResult<Self> {
+    pub async fn with_endianness(writer: W, endianness: Endianness) -> PcapResult<Self> {
         let section = SectionHeaderBlock { endianness, ..Default::default() };
 
-        Self::with_section_header(writer, section)
+        Self::with_section_header(writer, section).await
     }
 
     /// Creates a new [`PcapNgWriter`] from an existing writer with the given section header.
-    pub fn with_section_header(mut writer: W, section: SectionHeaderBlock<'static>) -> PcapResult<Self> {
+    pub async fn with_section_header(mut writer: W, section: SectionHeaderBlock<'static>) -> PcapResult<Self> {
         match section.endianness {
-            Endianness::Big => section.clone().into_block().write_to::<BigEndian, _>(&mut writer).map_err(PcapError::IoError)?,
-            Endianness::Little => section.clone().into_block().write_to::<LittleEndian, _>(&mut writer).map_err(PcapError::IoError)?,
+            Endianness::Big => section.clone().into_block().write_to::<BigEndian, _>(&mut writer).await.map_err(PcapError::IoError)?,
+            Endianness::Little => section.clone().into_block().write_to::<LittleEndian, _>(&mut writer).await.map_err(PcapError::IoError)?,
         };
 
         Ok(Self { section, interfaces: vec![], writer })
@@ -83,14 +85,15 @@ impl<W: Write> PcapNgWriter<W> {
     ///
     /// # Example
     /// ```rust,no_run
+    /// # tokio_test::block_on(async {
     /// use std::borrow::Cow;
-    /// use std::fs::File;
     /// use std::time::Duration;
+    /// use tokio::fs::File;
     ///
-    /// use pcap_file::pcapng::blocks::enhanced_packet::EnhancedPacketBlock;
-    /// use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionBlock;
-    /// use pcap_file::pcapng::{PcapNgBlock, PcapNgWriter};
-    /// use pcap_file::DataLink;
+    /// use pcap_file_tokio::pcapng::blocks::enhanced_packet::EnhancedPacketBlock;
+    /// use pcap_file_tokio::pcapng::blocks::interface_description::InterfaceDescriptionBlock;
+    /// use pcap_file_tokio::pcapng::{PcapNgBlock, PcapNgWriter};
+    /// use pcap_file_tokio::DataLink;
     ///
     /// let data = [0u8; 10];
     ///
@@ -108,13 +111,14 @@ impl<W: Write> PcapNgWriter<W> {
     ///     options: vec![],
     /// };
     ///
-    /// let file = File::create("out.pcap").expect("Error creating file");
-    /// let mut pcap_ng_writer = PcapNgWriter::new(file).unwrap();
+    /// let file = File::create("out.pcap").await.expect("Error creating file");
+    /// let mut pcap_ng_writer = PcapNgWriter::new(file).await.unwrap();
     ///
-    /// pcap_ng_writer.write_block(&interface.into_block()).unwrap();
-    /// pcap_ng_writer.write_block(&packet.into_block()).unwrap();
+    /// pcap_ng_writer.write_block(&interface.into_block()).await.unwrap();
+    /// pcap_ng_writer.write_block(&packet.into_block()).await.unwrap();
+    /// # });
     /// ```
-    pub fn write_block(&mut self, block: &Block) -> PcapResult<usize> {
+    pub async fn write_block(&mut self, block: &Block<'_>) -> PcapResult<usize> {
         match block {
             Block::SectionHeader(a) => {
                 self.section = a.clone().into_owned();
@@ -138,8 +142,8 @@ impl<W: Write> PcapNgWriter<W> {
         }
 
         match self.section.endianness {
-            Endianness::Big => block.write_to::<BigEndian, _>(&mut self.writer).map_err(PcapError::IoError),
-            Endianness::Little => block.write_to::<LittleEndian, _>(&mut self.writer).map_err(PcapError::IoError),
+            Endianness::Big => block.write_to::<BigEndian, _>(&mut self.writer).await.map_err(PcapError::IoError),
+            Endianness::Little => block.write_to::<LittleEndian, _>(&mut self.writer).await.map_err(PcapError::IoError),
         }
     }
 
@@ -147,14 +151,15 @@ impl<W: Write> PcapNgWriter<W> {
     ///
     /// # Example
     /// ```rust,no_run
+    /// # tokio_test::block_on(async {
     /// use std::borrow::Cow;
-    /// use std::fs::File;
     /// use std::time::Duration;
+    /// use tokio::fs::File;
     ///
-    /// use pcap_file::pcapng::blocks::enhanced_packet::EnhancedPacketBlock;
-    /// use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionBlock;
-    /// use pcap_file::pcapng::{PcapNgBlock, PcapNgWriter};
-    /// use pcap_file::DataLink;
+    /// use pcap_file_tokio::pcapng::blocks::enhanced_packet::EnhancedPacketBlock;
+    /// use pcap_file_tokio::pcapng::blocks::interface_description::InterfaceDescriptionBlock;
+    /// use pcap_file_tokio::pcapng::{PcapNgBlock, PcapNgWriter};
+    /// use pcap_file_tokio::DataLink;
     ///
     /// let data = [0u8; 10];
     ///
@@ -172,31 +177,32 @@ impl<W: Write> PcapNgWriter<W> {
     ///     options: vec![],
     /// };
     ///
-    /// let file = File::create("out.pcap").expect("Error creating file");
-    /// let mut pcap_ng_writer = PcapNgWriter::new(file).unwrap();
+    /// let file = File::create("out.pcap").await.expect("Error creating file");
+    /// let mut pcap_ng_writer = PcapNgWriter::new(file).await.unwrap();
     ///
-    /// pcap_ng_writer.write_pcapng_block(interface).unwrap();
-    /// pcap_ng_writer.write_pcapng_block(packet).unwrap();
+    /// pcap_ng_writer.write_pcapng_block(interface).await.unwrap();
+    /// pcap_ng_writer.write_pcapng_block(packet).await.unwrap();
+    /// # });
     /// ```
-    pub fn write_pcapng_block<'a, B: PcapNgBlock<'a>>(&mut self, block: B) -> PcapResult<usize> {
-        self.write_block(&block.into_block())
+    pub async fn write_pcapng_block<'a, B: PcapNgBlock<'a>>(&mut self, block: B) -> PcapResult<usize> {
+        self.write_block(&block.into_block()).await
     }
 
     /// Writes a [`RawBlock`].
     ///
     /// Doesn't check the validity of the written blocks.
-    pub fn write_raw_block(&mut self, block: &RawBlock) -> PcapResult<usize> {
+    pub async fn write_raw_block(&mut self, block: &RawBlock<'_>) -> PcapResult<usize> {
         return match self.section.endianness {
-            Endianness::Big => inner::<BigEndian, _>(&mut self.section, block, &mut self.writer),
-            Endianness::Little => inner::<LittleEndian, _>(&mut self.section, block, &mut self.writer),
+            Endianness::Big => inner::<BigEndian, _>(&mut self.section, block, &mut self.writer).await,
+            Endianness::Little => inner::<LittleEndian, _>(&mut self.section, block, &mut self.writer).await,
         };
 
-        fn inner<B: ByteOrder, W: Write>(section: &mut SectionHeaderBlock, block: &RawBlock, writer: &mut W) -> PcapResult<usize> {
+        async fn inner<B: ByteOrder + Send, W: AsyncWrite + Unpin>(section: &mut SectionHeaderBlock<'_>, block: &RawBlock<'_>, writer: &mut W) -> PcapResult<usize> {
             if block.type_ == SECTION_HEADER_BLOCK {
-                *section = block.clone().try_into_block::<B>()?.into_owned().into_section_header().unwrap();
+                *section = block.clone().try_into_block::<B>().await?.into_owned().into_section_header().unwrap();
             }
 
-            block.write_to::<B, _>(writer).map_err(PcapError::IoError)
+            block.write_to::<B, _>(writer).await.map_err(PcapError::IoError)
         }
     }
 

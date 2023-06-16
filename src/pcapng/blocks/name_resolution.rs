@@ -1,12 +1,12 @@
 //! Name Resolution Block (NRB).
 
 use std::borrow::Cow;
-use std::io::{Result as IoResult, Write};
+use std::io::Result as IoResult;
 
-use byteorder_slice::byteorder::WriteBytesExt;
-use byteorder_slice::result::ReadSlice;
-use byteorder_slice::ByteOrder;
+use byteorder::ByteOrder;
 use derive_into_owned::IntoOwned;
+use tokio::io::AsyncWrite;
+use tokio_byteorder::{AsyncReadBytesExt, AsyncWriteBytesExt};
 
 use super::block_common::{Block, PcapNgBlock};
 use super::opt_common::{CustomBinaryOption, CustomUtf8Option, PcapNgOption, UnknownOption, WriteOptTo};
@@ -23,12 +23,13 @@ pub struct NameResolutionBlock<'a> {
     pub options: Vec<NameResolutionOption<'a>>,
 }
 
+#[async_trait::async_trait]
 impl<'a> PcapNgBlock<'a> for NameResolutionBlock<'a> {
-    fn from_slice<B: ByteOrder>(mut slice: &'a [u8]) -> Result<(&'a [u8], Self), PcapError> {
+    async fn from_slice<B: ByteOrder + Send>(mut slice: &'a [u8]) -> Result<(&'a [u8], Self), PcapError> {
         let mut records = Vec::new();
 
         loop {
-            let (slice_tmp, record) = Record::from_slice::<B>(slice)?;
+            let (slice_tmp, record) = Record::from_slice::<B>(slice).await?;
             slice = slice_tmp;
 
             match record {
@@ -37,22 +38,22 @@ impl<'a> PcapNgBlock<'a> for NameResolutionBlock<'a> {
             }
         }
 
-        let (rem, options) = NameResolutionOption::opts_from_slice::<B>(slice)?;
+        let (rem, options) = NameResolutionOption::opts_from_slice::<B>(slice).await?;
 
         let block = NameResolutionBlock { records, options };
 
         Ok((rem, block))
     }
 
-    fn write_to<B: ByteOrder, W: Write>(&self, writer: &mut W) -> IoResult<usize> {
+    async fn write_to<B: ByteOrder, W: AsyncWrite + Unpin + Send>(&self, writer: &mut W) -> IoResult<usize> {
         let mut len = 0;
 
         for record in &self.records {
-            len += record.write_to::<B, _>(writer)?;
+            len += record.write_to::<B, _>(writer).await?;
         }
-        len += Record::End.write_to::<B, _>(writer)?;
+        len += Record::End.write_to::<B, _>(writer).await?;
 
-        len += NameResolutionOption::write_opts_to::<B, _>(&self.options, writer)?;
+        len += NameResolutionOption::write_opts_to::<B, _>(&self.options, writer).await?;
 
         Ok(len)
     }
@@ -77,9 +78,9 @@ pub enum Record<'a> {
 
 impl<'a> Record<'a> {
     /// Parse a [`Record`] from a slice
-    pub fn from_slice<B: ByteOrder>(mut slice: &'a [u8]) -> Result<(&'a [u8], Self), PcapError> {
-        let type_ = slice.read_u16::<B>().map_err(|_| PcapError::IncompleteBuffer)?;
-        let length = slice.read_u16::<B>().map_err(|_| PcapError::IncompleteBuffer)?;
+    pub async fn from_slice<B: ByteOrder>(mut slice: &'a [u8]) -> Result<(&'a [u8], Record<'a>), PcapError> {
+        let type_ = slice.read_u16::<B>().await.map_err(|_| PcapError::IncompleteBuffer)?;
+        let length = slice.read_u16::<B>().await.map_err(|_| PcapError::IncompleteBuffer)?;
         let pad_len = (4 - length % 4) % 4;
 
         if slice.len() < length as usize {
@@ -117,35 +118,35 @@ impl<'a> Record<'a> {
     }
 
     /// Write a [`Record`] to a writer
-    pub fn write_to<B: ByteOrder, W: Write>(&self, writer: &mut W) -> IoResult<usize> {
+    pub async fn write_to<B: ByteOrder, W: AsyncWrite + Unpin + Send>(&self, writer: &mut W) -> IoResult<usize> {
         match self {
             Record::End => {
-                writer.write_u16::<B>(0)?;
-                writer.write_u16::<B>(0)?;
+                writer.write_u16::<B>(0).await?;
+                writer.write_u16::<B>(0).await?;
 
                 Ok(4)
             },
 
             Record::Ipv4(a) => {
-                let len = a.write_to::<B, _>(&mut std::io::sink()).unwrap();
+                let len = a.write_to::<B, _>(&mut tokio::io::sink()).await.unwrap();
                 let pad_len = (4 - len % 4) % 4;
 
-                writer.write_u16::<B>(1)?;
-                writer.write_u16::<B>(len as u16)?;
-                a.write_to::<B, _>(writer)?;
-                writer.write_all(&[0_u8; 3][..pad_len])?;
+                writer.write_u16::<B>(1).await?;
+                writer.write_u16::<B>(len as u16).await?;
+                a.write_to::<B, _>(writer).await?;
+                tokio::io::AsyncWriteExt::write_all(writer, &[0_u8; 3][..pad_len]).await?;
 
                 Ok(4 + len + pad_len)
             },
 
             Record::Ipv6(a) => {
-                let len = a.write_to::<B, _>(&mut std::io::sink()).unwrap();
+                let len = a.write_to::<B, _>(&mut tokio::io::sink()).await.unwrap();
                 let pad_len = (4 - len % 4) % 4;
 
-                writer.write_u16::<B>(2)?;
-                writer.write_u16::<B>(len as u16)?;
-                a.write_to::<B, _>(writer)?;
-                writer.write_all(&[0_u8; 3][..pad_len])?;
+                writer.write_u16::<B>(2).await?;
+                writer.write_u16::<B>(len as u16).await?;
+                a.write_to::<B, _>(writer).await?;
+                tokio::io::AsyncWriteExt::write_all(writer, &[0_u8; 3][..pad_len]).await?;
 
                 Ok(4 + len + pad_len)
             },
@@ -154,10 +155,10 @@ impl<'a> Record<'a> {
                 let len = a.value.len();
                 let pad_len = (4 - len % 4) % 4;
 
-                writer.write_u16::<B>(a.type_)?;
-                writer.write_u16::<B>(a.length)?;
-                writer.write_all(&a.value)?;
-                writer.write_all(&[0_u8; 3][..pad_len])?;
+                writer.write_u16::<B>(a.type_).await?;
+                writer.write_u16::<B>(a.length).await?;
+                tokio::io::AsyncWriteExt::write_all(writer, &a.value).await?;
+                tokio::io::AsyncWriteExt::write_all(writer, &[0_u8; 3][..pad_len]).await?;
 
                 Ok(4 + len + pad_len)
             },
@@ -202,13 +203,13 @@ impl<'a> Ipv4Record<'a> {
     }
 
     /// Write a [`Ipv4Record`] to a writter
-    pub fn write_to<B: ByteOrder, W: Write>(&self, writer: &mut W) -> IoResult<usize> {
+    pub async fn write_to<B: ByteOrder, W: AsyncWrite + Unpin + Send>(&self, writer: &mut W) -> IoResult<usize> {
         let mut len = 4;
 
-        writer.write_all(&self.ip_addr)?;
+        tokio::io::AsyncWriteExt::write_all(writer, &self.ip_addr).await?;
         for name in &self.names {
-            writer.write_all(name.as_bytes())?;
-            writer.write_u8(0)?;
+            tokio::io::AsyncWriteExt::write_all(writer, name.as_bytes()).await?;
+            writer.write_u8(0).await?;
 
             len += name.as_bytes().len();
             len += 1;
@@ -257,13 +258,13 @@ impl<'a> Ipv6Record<'a> {
     }
 
     /// Write a [`Ipv6Record`] to a writter
-    pub fn write_to<B: ByteOrder, W: Write>(&self, writer: &mut W) -> IoResult<usize> {
+    pub async fn write_to<B: ByteOrder, W: AsyncWrite + Unpin + Send>(&self, writer: &mut W) -> IoResult<usize> {
         let mut len = 16;
 
-        writer.write_all(&self.ip_addr)?;
+        tokio::io::AsyncWriteExt::write_all(writer, &self.ip_addr).await?;
         for name in &self.names {
-            writer.write_all(name.as_bytes())?;
-            writer.write_u8(0)?;
+            tokio::io::AsyncWriteExt::write_all(writer, name.as_bytes()).await?;
+            writer.write_u8(0).await?;
 
             len += name.as_bytes().len();
             len += 1;
@@ -318,8 +319,9 @@ pub enum NameResolutionOption<'a> {
     Unknown(UnknownOption<'a>),
 }
 
+#[async_trait::async_trait]
 impl<'a> PcapNgOption<'a> for NameResolutionOption<'a> {
-    fn from_slice<B: ByteOrder>(code: u16, length: u16, slice: &'a [u8]) -> Result<Self, PcapError> {
+    async fn from_slice<B: ByteOrder + Send>(code: u16, length: u16, slice: &'a [u8]) -> Result<NameResolutionOption<'a>, PcapError> {
         let opt = match code {
             1 => NameResolutionOption::Comment(Cow::Borrowed(std::str::from_utf8(slice)?)),
             2 => NameResolutionOption::NsDnsName(Cow::Borrowed(std::str::from_utf8(slice)?)),
@@ -336,8 +338,8 @@ impl<'a> PcapNgOption<'a> for NameResolutionOption<'a> {
                 NameResolutionOption::NsDnsIpv6Addr(Cow::Borrowed(slice))
             },
 
-            2988 | 19372 => NameResolutionOption::CustomUtf8(CustomUtf8Option::from_slice::<B>(code, slice)?),
-            2989 | 19373 => NameResolutionOption::CustomBinary(CustomBinaryOption::from_slice::<B>(code, slice)?),
+            2988 | 19372 => NameResolutionOption::CustomUtf8(CustomUtf8Option::from_slice::<B>(code, slice).await?),
+            2989 | 19373 => NameResolutionOption::CustomBinary(CustomBinaryOption::from_slice::<B>(code, slice).await?),
 
             _ => NameResolutionOption::Unknown(UnknownOption::new(code, length, slice)),
         };
@@ -345,15 +347,15 @@ impl<'a> PcapNgOption<'a> for NameResolutionOption<'a> {
         Ok(opt)
     }
 
-    fn write_to<B: ByteOrder, W: Write>(&self, writer: &mut W) -> IoResult<usize> {
+    async fn write_to<B: ByteOrder, W: AsyncWrite + Unpin + Send>(&self, writer: &mut W) -> IoResult<usize> {
         match self {
-            NameResolutionOption::Comment(a) => a.write_opt_to::<B, W>(1, writer),
-            NameResolutionOption::NsDnsName(a) => a.write_opt_to::<B, W>(2, writer),
-            NameResolutionOption::NsDnsIpv4Addr(a) => a.write_opt_to::<B, W>(3, writer),
-            NameResolutionOption::NsDnsIpv6Addr(a) => a.write_opt_to::<B, W>(4, writer),
-            NameResolutionOption::CustomBinary(a) => a.write_opt_to::<B, W>(a.code, writer),
-            NameResolutionOption::CustomUtf8(a) => a.write_opt_to::<B, W>(a.code, writer),
-            NameResolutionOption::Unknown(a) => a.write_opt_to::<B, W>(a.code, writer),
+            NameResolutionOption::Comment(a) => a.write_opt_to::<B, W>(1, writer).await,
+            NameResolutionOption::NsDnsName(a) => a.write_opt_to::<B, W>(2, writer).await,
+            NameResolutionOption::NsDnsIpv4Addr(a) => a.write_opt_to::<B, W>(3, writer).await,
+            NameResolutionOption::NsDnsIpv6Addr(a) => a.write_opt_to::<B, W>(4, writer).await,
+            NameResolutionOption::CustomBinary(a) => a.write_opt_to::<B, W>(a.code, writer).await,
+            NameResolutionOption::CustomUtf8(a) => a.write_opt_to::<B, W>(a.code, writer).await,
+            NameResolutionOption::Unknown(a) => a.write_opt_to::<B, W>(a.code, writer).await,
         }
     }
 }

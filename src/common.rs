@@ -1,4 +1,4 @@
-use byteorder_slice::{BigEndian, ByteOrder, LittleEndian};
+use byteorder::{ByteOrder, BigEndian, LittleEndian};
 
 /// Timestamp resolution of the pcap
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

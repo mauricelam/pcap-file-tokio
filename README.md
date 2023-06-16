@@ -1,26 +1,29 @@
-# pcap-file
+# pcap-file-tokio
+Fork of the awesome [pcap-file](https://github.com/courvoif/pcap-file) crate, modified to support
+[tokio](https://tokio.rs/).
+
 Provides parsers, readers and writers for Pcap and PcapNg files.
 
 For Pcap files see the pcap module.
 
 For PcapNg files see the pcapng module.
 
-[![Crates.io](https://img.shields.io/crates/v/pcap-file.svg)](https://crates.io/crates/pcap-file)
-[![rustdoc](https://img.shields.io/badge/Doc-pcap--file-green.svg)](https://docs.rs/pcap-file/)
-[![Crates.io](https://img.shields.io/crates/l/pcap-file.svg)](https://github.com/courvoif/pcap-file/blob/master/LICENSE)
+[![Crates.io](https://img.shields.io/crates/v/pcap-file-tokio.svg)](https://crates.io/crates/pcap-file-tokio)
+[![rustdoc](https://img.shields.io/badge/Doc-pcap--file-green.svg)](https://docs.rs/pcap-file-tokio/)
+[![Crates.io](https://img.shields.io/crates/l/pcap-file-tokio.svg)](https://github.com/mauricelam/pcap-file-tokio/blob/master/LICENSE)
 
 
 ## Documentation
-<https://docs.rs/pcap-file>
+<https://docs.rs/pcap-file-tokio>
 
 
 ## Installation
-This crate is on [crates.io](https://crates.io/crates/pcap-file).
+This crate is on [crates.io](https://crates.io/crates/pcap-file-tokio).
 Add it to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-pcap-file = "2.0.0-rc1"
+pcap-file-tokio = "2.0.0-rc1"
 ```
 
 
@@ -28,35 +31,41 @@ pcap-file = "2.0.0-rc1"
 
 ### PcapReader
 ```rust,no_run
-use std::fs::File;
-use pcap_file::pcap::PcapReader;
+use tokio::fs::File;
+use pcap_file_tokio::pcap::PcapReader;
 
-let file_in = File::open("test.pcap").expect("Error opening file");
-let mut pcap_reader = PcapReader::new(file_in).unwrap();
+#[tokio::main]
+async fn main() {
+    let file_in = File::open("test.pcap").await.expect("Error opening file");
+    let mut pcap_reader = PcapReader::new(file_in).await.unwrap();
 
-// Read test.pcap
-while let Some(pkt) = pcap_reader.next_packet() {
-    //Check if there is no error
-    let pkt = pkt.unwrap();
+    // Read test.pcap
+    while let Some(pkt) = pcap_reader.next_packet().await {
+        //Check if there is no error
+        let pkt = pkt.unwrap();
 
-    //Do something
- }
+        //Do something
+    }
+}
 ```
 
 ### PcapNgReader
 ```rust,no_run
-use std::fs::File;
-use pcap_file::pcapng::PcapNgReader;
+use tokio::fs::File;
+use pcap_file_tokio::pcapng::PcapNgReader;
 
-let file_in = File::open("test.pcapng").expect("Error opening file");
-let mut pcapng_reader = PcapNgReader::new(file_in).unwrap();
+#[tokio::main]
+async fn main() {
+    let file_in = File::open("test.pcapng").await.expect("Error opening file");
+    let mut pcapng_reader = PcapNgReader::new(file_in).await.unwrap();
 
-// Read test.pcapng
-while let Some(block) = pcapng_reader.next_block() {
-    // Check if there is no error
-    let block = block.unwrap();
+    // Read test.pcapng
+    while let Some(block) = pcapng_reader.next_block().await {
+        // Check if there is no error
+        let block = block.unwrap();
 
-    //  Do something
+        //  Do something
+    }
 }
 ```
 

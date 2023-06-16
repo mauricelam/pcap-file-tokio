@@ -1,13 +1,13 @@
 [package]
-name = "pcap-file"
+name = "pcap-file-tokio"
 edition = "2021"
 version = "2.0.0"
-authors = ["Courvoif <courvoif@pm.me>"]
+authors = ["Maurice Lam <mauriceprograms@gmail.com>"]
 description = "A crate to parse, read and write Pcap and PcapNg"
 
 license = "MIT"
-documentation = "https://docs.rs/pcap-file/"
-repository = "https://github.com/courvoif/pcap-file"
+documentation = "https://docs.rs/pcap-file-tokio/"
+repository = "https://github.com/mauricelam/pcap-file-tokio"
 readme = "README.md"
 keywords = ["pcap", "pcapng", "parse", "read", "write"]
 categories = ["encoding", "parsing"]
@@ -16,12 +16,17 @@ exclude = ["benches/bench.pcap", "benches/bench.pcapng", "fuzz", "tests"]
 
 
 [dependencies]
-byteorder_slice = "3.0.0"
 derive-into-owned = "0.2.0"
 thiserror = "1.0.35"
+tokio = "1.28.2"
+tokio-byteorder = "0.3.0"
+byteorder = "1.4.3"
+async-trait = "0.1.68"
 
 [dev-dependencies]
-criterion = "0.4.0"
+tokio = { version = "1.28.2", features = ["macros", "rt", "rt-multi-thread", "fs"] }
+tokio-test = "0.4.2"
+criterion = { version = "0.5.1", features = ["async_tokio"] }
 glob = "0.3.0"
 hex = "0.4.3"
 

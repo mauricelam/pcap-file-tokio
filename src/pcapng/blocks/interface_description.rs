@@ -3,12 +3,12 @@
 //! Interface Description Block (IDB).
 
 use std::borrow::Cow;
-use std::io::{Result as IoResult, Write};
+use std::io::Result as IoResult;
 
-use byteorder_slice::byteorder::WriteBytesExt;
-use byteorder_slice::result::ReadSlice;
-use byteorder_slice::ByteOrder;
+use byteorder::ByteOrder;
 use derive_into_owned::IntoOwned;
+use tokio::io::AsyncWrite;
+use tokio_byteorder::{AsyncReadBytesExt, AsyncWriteBytesExt};
 
 use super::block_common::{Block, PcapNgBlock};
 use super::opt_common::{CustomBinaryOption, CustomUtf8Option, PcapNgOption, UnknownOption, WriteOptTo};
@@ -36,33 +36,34 @@ pub struct InterfaceDescriptionBlock<'a> {
     pub options: Vec<InterfaceDescriptionOption<'a>>,
 }
 
+#[async_trait::async_trait]
 impl<'a> PcapNgBlock<'a> for InterfaceDescriptionBlock<'a> {
-    fn from_slice<B: ByteOrder>(mut slice: &'a [u8]) -> Result<(&'a [u8], Self), PcapError> {
+    async fn from_slice<B: ByteOrder + Send>(mut slice: &'a [u8]) -> Result<(&'a [u8], Self), PcapError> {
         if slice.len() < 8 {
             return Err(PcapError::InvalidField("InterfaceDescriptionBlock: block length < 8"));
         }
 
-        let linktype = (slice.read_u16::<B>().unwrap() as u32).into();
+        let linktype = (slice.read_u16::<B>().await.unwrap() as u32).into();
 
-        let reserved = slice.read_u16::<B>().unwrap();
+        let reserved = slice.read_u16::<B>().await.unwrap();
         if reserved != 0 {
             return Err(PcapError::InvalidField("InterfaceDescriptionBlock: reserved != 0"));
         }
 
-        let snaplen = slice.read_u32::<B>().unwrap();
-        let (slice, options) = InterfaceDescriptionOption::opts_from_slice::<B>(slice)?;
+        let snaplen = slice.read_u32::<B>().await.unwrap();
+        let (slice, options) = InterfaceDescriptionOption::opts_from_slice::<B>(slice).await?;
 
         let block = InterfaceDescriptionBlock { linktype, snaplen, options };
 
         Ok((slice, block))
     }
 
-    fn write_to<B: ByteOrder, W: Write>(&self, writer: &mut W) -> IoResult<usize> {
-        writer.write_u16::<B>(u32::from(self.linktype) as u16)?;
-        writer.write_u16::<B>(0)?;
-        writer.write_u32::<B>(self.snaplen)?;
+    async fn write_to<B: ByteOrder, W: AsyncWrite + Unpin + Send>(&self, writer: &mut W) -> IoResult<usize> {
+        writer.write_u16::<B>(u32::from(self.linktype) as u16).await?;
+        writer.write_u16::<B>(0).await?;
+        writer.write_u32::<B>(self.snaplen).await?;
 
-        let opt_len = InterfaceDescriptionOption::write_opts_to::<B, W>(&self.options, writer)?;
+        let opt_len = InterfaceDescriptionOption::write_opts_to::<B, W>(&self.options, writer).await?;
         Ok(8 + opt_len)
     }
 
@@ -140,8 +141,9 @@ pub enum InterfaceDescriptionOption<'a> {
     Unknown(UnknownOption<'a>),
 }
 
+#[async_trait::async_trait]
 impl<'a> PcapNgOption<'a> for InterfaceDescriptionOption<'a> {
-    fn from_slice<B: ByteOrder>(code: u16, length: u16, mut slice: &'a [u8]) -> Result<Self, PcapError> {
+    async fn from_slice<B: ByteOrder + Send>(code: u16, length: u16, mut slice: &'a [u8]) -> Result<Self, PcapError> {
         let opt = match code {
             1 => InterfaceDescriptionOption::Comment(Cow::Borrowed(std::str::from_utf8(slice)?)),
             2 => InterfaceDescriptionOption::IfName(Cow::Borrowed(std::str::from_utf8(slice)?)),
@@ -168,25 +170,25 @@ impl<'a> PcapNgOption<'a> for InterfaceDescriptionOption<'a> {
                 if slice.len() != 8 {
                     return Err(PcapError::InvalidField("InterfaceDescriptionOption: IfEuIAddr length != 8"));
                 }
-                InterfaceDescriptionOption::IfEuIAddr(slice.read_u64::<B>().map_err(|_| PcapError::IncompleteBuffer)?)
+                InterfaceDescriptionOption::IfEuIAddr(slice.read_u64::<B>().await.map_err(|_| PcapError::IncompleteBuffer)?)
             },
             8 => {
                 if slice.len() != 8 {
                     return Err(PcapError::InvalidField("InterfaceDescriptionOption: IfSpeed length != 8"));
                 }
-                InterfaceDescriptionOption::IfSpeed(slice.read_u64::<B>().map_err(|_| PcapError::IncompleteBuffer)?)
+                InterfaceDescriptionOption::IfSpeed(slice.read_u64::<B>().await.map_err(|_| PcapError::IncompleteBuffer)?)
             },
             9 => {
                 if slice.len() != 1 {
                     return Err(PcapError::InvalidField("InterfaceDescriptionOption: IfTsResol length != 1"));
                 }
-                InterfaceDescriptionOption::IfTsResol(slice.read_u8().map_err(|_| PcapError::IncompleteBuffer)?)
+                InterfaceDescriptionOption::IfTsResol(slice.read_u8().await.map_err(|_| PcapError::IncompleteBuffer)?)
             },
             10 => {
                 if slice.len() != 1 {
                     return Err(PcapError::InvalidField("InterfaceDescriptionOption: IfTzone length != 1"));
                 }
-                InterfaceDescriptionOption::IfTzone(slice.read_u32::<B>().map_err(|_| PcapError::IncompleteBuffer)?)
+                InterfaceDescriptionOption::IfTzone(slice.read_u32::<B>().await.map_err(|_| PcapError::IncompleteBuffer)?)
             },
             11 => {
                 if slice.is_empty() {
@@ -199,18 +201,18 @@ impl<'a> PcapNgOption<'a> for InterfaceDescriptionOption<'a> {
                 if slice.len() != 1 {
                     return Err(PcapError::InvalidField("InterfaceDescriptionOption: IfFcsLen length != 1"));
                 }
-                InterfaceDescriptionOption::IfFcsLen(slice.read_u8().map_err(|_| PcapError::IncompleteBuffer)?)
+                InterfaceDescriptionOption::IfFcsLen(slice.read_u8().await.map_err(|_| PcapError::IncompleteBuffer)?)
             },
             14 => {
                 if slice.len() != 8 {
                     return Err(PcapError::InvalidField("InterfaceDescriptionOption: IfTsOffset length != 8"));
                 }
-                InterfaceDescriptionOption::IfTsOffset(slice.read_u64::<B>().map_err(|_| PcapError::IncompleteBuffer)?)
+                InterfaceDescriptionOption::IfTsOffset(slice.read_u64::<B>().await.map_err(|_| PcapError::IncompleteBuffer)?)
             },
             15 => InterfaceDescriptionOption::IfHardware(Cow::Borrowed(std::str::from_utf8(slice)?)),
 
-            2988 | 19372 => InterfaceDescriptionOption::CustomUtf8(CustomUtf8Option::from_slice::<B>(code, slice)?),
-            2989 | 19373 => InterfaceDescriptionOption::CustomBinary(CustomBinaryOption::from_slice::<B>(code, slice)?),
+            2988 | 19372 => InterfaceDescriptionOption::CustomUtf8(CustomUtf8Option::from_slice::<B>(code, slice).await?),
+            2989 | 19373 => InterfaceDescriptionOption::CustomBinary(CustomBinaryOption::from_slice::<B>(code, slice).await?),
 
             _ => InterfaceDescriptionOption::Unknown(UnknownOption::new(code, length, slice)),
         };
@@ -218,26 +220,26 @@ impl<'a> PcapNgOption<'a> for InterfaceDescriptionOption<'a> {
         Ok(opt)
     }
 
-    fn write_to<B: ByteOrder, W: Write>(&self, writer: &mut W) -> IoResult<usize> {
+    async fn write_to<B: ByteOrder, W: AsyncWrite + Unpin + Send>(&self, writer: &mut W) -> IoResult<usize> {
         match self {
-            InterfaceDescriptionOption::Comment(a) => a.write_opt_to::<B, W>(1, writer),
-            InterfaceDescriptionOption::IfName(a) => a.write_opt_to::<B, W>(2, writer),
-            InterfaceDescriptionOption::IfDescription(a) => a.write_opt_to::<B, W>(3, writer),
-            InterfaceDescriptionOption::IfIpv4Addr(a) => a.write_opt_to::<B, W>(4, writer),
-            InterfaceDescriptionOption::IfIpv6Addr(a) => a.write_opt_to::<B, W>(5, writer),
-            InterfaceDescriptionOption::IfMacAddr(a) => a.write_opt_to::<B, W>(6, writer),
-            InterfaceDescriptionOption::IfEuIAddr(a) => a.write_opt_to::<B, W>(7, writer),
-            InterfaceDescriptionOption::IfSpeed(a) => a.write_opt_to::<B, W>(8, writer),
-            InterfaceDescriptionOption::IfTsResol(a) => a.write_opt_to::<B, W>(9, writer),
-            InterfaceDescriptionOption::IfTzone(a) => a.write_opt_to::<B, W>(10, writer),
-            InterfaceDescriptionOption::IfFilter(a) => a.write_opt_to::<B, W>(11, writer),
-            InterfaceDescriptionOption::IfOs(a) => a.write_opt_to::<B, W>(12, writer),
-            InterfaceDescriptionOption::IfFcsLen(a) => a.write_opt_to::<B, W>(13, writer),
-            InterfaceDescriptionOption::IfTsOffset(a) => a.write_opt_to::<B, W>(14, writer),
-            InterfaceDescriptionOption::IfHardware(a) => a.write_opt_to::<B, W>(15, writer),
-            InterfaceDescriptionOption::CustomBinary(a) => a.write_opt_to::<B, W>(a.code, writer),
-            InterfaceDescriptionOption::CustomUtf8(a) => a.write_opt_to::<B, W>(a.code, writer),
-            InterfaceDescriptionOption::Unknown(a) => a.write_opt_to::<B, W>(a.code, writer),
+            InterfaceDescriptionOption::Comment(a) => a.write_opt_to::<B, W>(1, writer).await,
+            InterfaceDescriptionOption::IfName(a) => a.write_opt_to::<B, W>(2, writer).await,
+            InterfaceDescriptionOption::IfDescription(a) => a.write_opt_to::<B, W>(3, writer).await,
+            InterfaceDescriptionOption::IfIpv4Addr(a) => a.write_opt_to::<B, W>(4, writer).await,
+            InterfaceDescriptionOption::IfIpv6Addr(a) => a.write_opt_to::<B, W>(5, writer).await,
+            InterfaceDescriptionOption::IfMacAddr(a) => a.write_opt_to::<B, W>(6, writer).await,
+            InterfaceDescriptionOption::IfEuIAddr(a) => a.write_opt_to::<B, W>(7, writer).await,
+            InterfaceDescriptionOption::IfSpeed(a) => a.write_opt_to::<B, W>(8, writer).await,
+            InterfaceDescriptionOption::IfTsResol(a) => a.write_opt_to::<B, W>(9, writer).await,
+            InterfaceDescriptionOption::IfTzone(a) => a.write_opt_to::<B, W>(10, writer).await,
+            InterfaceDescriptionOption::IfFilter(a) => a.write_opt_to::<B, W>(11, writer).await,
+            InterfaceDescriptionOption::IfOs(a) => a.write_opt_to::<B, W>(12, writer).await,
+            InterfaceDescriptionOption::IfFcsLen(a) => a.write_opt_to::<B, W>(13, writer).await,
+            InterfaceDescriptionOption::IfTsOffset(a) => a.write_opt_to::<B, W>(14, writer).await,
+            InterfaceDescriptionOption::IfHardware(a) => a.write_opt_to::<B, W>(15, writer).await,
+            InterfaceDescriptionOption::CustomBinary(a) => a.write_opt_to::<B, W>(a.code, writer).await,
+            InterfaceDescriptionOption::CustomUtf8(a) => a.write_opt_to::<B, W>(a.code, writer).await,
+            InterfaceDescriptionOption::Unknown(a) => a.write_opt_to::<B, W>(a.code, writer).await,
         }
     }
 }
