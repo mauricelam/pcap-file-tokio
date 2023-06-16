@@ -1,9 +1,10 @@
 [package]
 name = "pcap-file-tokio"
 edition = "2021"
-version = "2.0.0"
+version = "0.1.0"
 authors = ["Maurice Lam <mauriceprograms@gmail.com>"]
-description = "A crate to parse, read and write Pcap and PcapNg"
+# Originally authors = ["Courvoif <courvoif@pm.me>"] in the upstream crate
+description = "A crate to parse, read and write Pcap and PcapNg asynchronously with Tokio"
 
 license = "MIT"
 documentation = "https://docs.rs/pcap-file-tokio/"
