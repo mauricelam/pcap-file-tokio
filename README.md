@@ -9,7 +9,7 @@ For Pcap files see the pcap module.
 For PcapNg files see the pcapng module.
 
 [![Crates.io](https://img.shields.io/crates/v/pcap-file-tokio.svg)](https://crates.io/crates/pcap-file-tokio)
-[![rustdoc](https://img.shields.io/badge/Doc-pcap--file-green.svg)](https://docs.rs/pcap-file-tokio/)
+[![rustdoc](https://img.shields.io/badge/Doc-pcap--file--tokio-green.svg)](https://docs.rs/pcap-file-tokio/)
 [![Crates.io](https://img.shields.io/crates/l/pcap-file-tokio.svg)](https://github.com/mauricelam/pcap-file-tokio/blob/master/LICENSE)
 
 
@@ -23,7 +23,7 @@ Add it to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-pcap-file-tokio = "2.0.0-rc1"
+pcap-file-tokio = "0.1.0"
 ```
 
 
